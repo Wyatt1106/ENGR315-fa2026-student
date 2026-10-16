@@ -3,245 +3,285 @@ import os
 import math
 import sys
 
+# Use this Python file's folder as the working directory.
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 
 def parse_tensile_file(path_to_file):
-    file = open(path_to_file)
-    # required meta-data
     gage_diameter = -1
-    maximum_force = - 1
-    maximum_strain = -1
-    # determine when to begin reading into these files
     begin_reading = False
+
     time = []
     displacement = []
     force = []
     strain = []
-    # begin iterating through file
-    for line in file:
-        if line == '' or line == '\n':
-            continue
 
-        splits = line.strip().split(",")
+    with open(path_to_file) as file:
+        for line in file:
+            if not line.strip():
+                continue
 
-        if begin_reading == False:
+            splits = line.strip().split(",")
 
-            # gather various meta data
-            if splits[0] == "Gage Diameter":
-                cleaned = splits[2].replace('\"', '')
-                gage_diameter = float(cleaned)
-            if splits[0] == "Maximum Force":
-                cleaned = splits[2].replace('\"', '')
-                maximum_force = float(cleaned)
-            if splits[0] == "Maximum Strain":
-                cleaned = splits[2].replace('\"', '')
-                maximum_strain = float(cleaned)
+            if not begin_reading:
+                if splits[0] == "Gage Diameter":
+                    gage_diameter = float(
+                        splits[2].replace('"', "")
+                    )
 
-        else:
-            # parse the actual data
-            time.append(float(splits[0].replace('\"', '')))
-            displacement.append(float(splits[1].replace('\"', '')))
-            force.append(float(splits[2].replace('\"', '')))
-            strain.append(float(splits[3].replace('\"', '')))
+                if splits[0] == "(s)":
+                    begin_reading = True
 
-        # try to find start of data
-        if splits[0] == "(s)":
-            begin_reading = True
-    file.close()
+            else:
+                time.append(float(splits[0].replace('"', "")))
+                displacement.append(
+                    float(splits[1].replace('"', ""))
+                )
+                force.append(float(splits[2].replace('"', "")))
+                strain.append(float(splits[3].replace('"', "")))
 
-    return gage_diameter, np.asarray(time), np.asarray(displacement), np.asarray(force), np.asarray(strain)
+    return (
+        gage_diameter,
+        np.asarray(time),
+        np.asarray(displacement),
+        np.asarray(force),
+        np.asarray(strain),
+    )
 
 
 def calculate_stress(force, sample_diameter):
     """
-    Calculate the stress (MPa) experienced by the test given a series of forces/loads (kN) and
-    a sample diameter (mm)
-    :param force: An array of forces/loads applied to the sample in Kilo Newtons (kN)
-    :param sample_diameter: The diameter of the sample in millimeters (mm)
-    :return: An array of stresses experienced by the sample in MegaPascals (MPa)
+    Convert force in kN to engineering stress in MPa,
+    using the original sample diameter in mm.
     """
+    cross_sectional_area = math.pi * sample_diameter**2 / 4
+    stress = force * 1000 / cross_sectional_area
 
-    ### YOUR SOLUTION FROM STEP 1 TEMPLATE HERE ###
-
-    return None
+    return stress
 
 
 def calculate_max_strength_strain(strain, stress):
     """
-    Calculate the Ultimate Tensile Stress and Fracture Strain
-    :param strain: An array of Strain data (mm/mm, dimensionless)
-    :param stress: An array of Stress data
-    :return:
-    Ultimate Tensile Stress: the maximum stress experienced
-    Fracture Strain: the maximum strain experienced before fracture
+    Return ultimate tensile stress and maximum strain.
     """
+    ultimate_tensile_stress = np.max(stress)
+    fracture_strain = np.max(strain)
 
-    ### YOUR SOLUTION FROM STEP 2 TEMPLATE HERE ###
+    return ultimate_tensile_stress, fracture_strain
 
-    return -1, -1
 
 def calculate_elastic_modulus(strain, stress):
     """
-        Given a set of stress strain data, use the Secant Modulus at 40% method to determine
-        the elastic modulus
-        :param strain:
-        :param stress:
-        :return:
-        linear_index: the index within the strain/stress data that is the end of the linear region
-        slope: the slope for the linear region of the strain/stress data
-        intercept: y-intercept for linear region best fit of strain/stress data
+    Fit the initial stress-strain region up to approximately
+    40% of peak stress.
+
+    Return the endpoint index, slope, and intercept.
     """
+    peak_index = int(np.argmax(stress))
+    target_stress = 0.40 * stress[peak_index]
 
-    # dummy variables the function should over write
-    linear_index = None
-    slope = None
-    intercept = None
+    # Search before the peak to select the initial loading region.
+    loading_stress = stress[:peak_index + 1]
+    diffs = np.abs(loading_stress - target_stress)
+    linear_index = int(np.argmin(diffs))
 
-    ### YOUR SOLUTION FROM STEP 3 TEMPLATE HERE ###
+    linear_strain = strain[0:linear_index]
+    linear_stress = stress[0:linear_index]
+
+    if len(linear_strain) < 2:
+        raise ValueError(
+            "Too few points in the initial region "
+            "to calculate elastic modulus."
+        )
+
+    if np.ptp(linear_strain) == 0:
+        raise ValueError(
+            "The initial strain values do not vary."
+        )
+
+    slope, intercept = np.polyfit(
+        linear_strain, linear_stress, 1
+    )
 
     return linear_index, slope, intercept
 
+
 def calculate_percent_offset(slope, strain, stress):
     """
-    Determine the 0.2% Offset Yield by identifying the intercept with the stress curve and a parallel line
-
-    :param slope: Slope of the offset line. This should be the elastic modulus
-    :param strain: An array of Strain data (mm/mm, dimensionless)
-    :param stress: An array of Stress data
-    :return:
-    offset_line: the y-values for the 0.2% offset line
-    intercept_index: The index where the offset line and the strain line intersect
+    Calculate the 0.2% offset line and locate the measured
+    point closest to its intersection with the stress curve.
     """
-    # set the desired offset for the line
     offset = 0.002
+    offset_line = slope * (strain - offset)
 
-    # calculate the offset line: y=m(x-0.002) + 0
-    offset_line = None
-
-    # measure distance from all points on graph to this line. Consider using the
-    # abs() method to ensure values are positive
-    distance = None
-
-    # use argmin to find the index where the distance is minimal
-    intercept_index = -1
+    distance = np.abs(stress - offset_line)
+    intercept_index = int(np.argmin(distance))
 
     return offset_line, intercept_index
+
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    # modify this line to select different materials/folders within tensile/
+    # Select the material and sample.
     material_folder = "1045CR"
-
-    # modify this line to select different samples in the material folder
     sample_name = "C01A1045CR_1"
-
 
     ### Do not modify below this line ###
 
     path_to_directory = "../../../data/tensile/"
     path_to_samples = path_to_directory + material_folder + "/"
-
-    # manually parse file to get gage diameter and then calculate cross-sectional area
     path_to_file = path_to_samples + sample_name + ".csv"
 
-    # Step #1: Parse the file ane return based values
-    # sample diameter (mm), time (s), displacement (mm), force (kN), and strain (%)
-    sample_diameter, time, displacement, force, strain = parse_tensile_file(path_to_file)
+    sample_diameter, time, displacement, force, strain = (
+        parse_tensile_file(path_to_file)
+    )
 
-    # Step #1: Given the forces and sample diameter, calculate the strain
+    # Step 1: Calculate stress.
     stress = calculate_stress(force, sample_diameter)
 
     if stress is None:
-        print("Error! No stress returned. Did you fill in the calculate_stress() method?")
+        print(
+            "Error! No stress returned. "
+            "Did you fill in calculate_stress()?"
+        )
         sys.exit(-1)
 
-    # use scatter plot so we don't assume a line (yet)
+    plt.figure()
     plt.scatter(strain, stress, label="Stress - Strain")
-    plt.xlabel('Strain (mm/mm)')
-    plt.ylabel('Stress (MPa)')
-    plt.title('Stress-Strain Curve for Sample ' + sample_name)
+    plt.xlabel("Strain (mm/mm)")
+    plt.ylabel("Stress (MPa)")
+    plt.title("Stress-Strain Curve for Sample " + sample_name)
     plt.show()
 
-    # Step #2: Calculate basic parameters such as the ultimate tensile strength
-    # and fracture strain
+    # Step 2: Ultimate tensile strength and fracture strain.
+    ultimate_tensile_strength, fracture_strain = (
+        calculate_max_strength_strain(strain, stress)
+    )
 
-    # calculate easy variables
-    ultimate_tensile_strength, fracture_strain = calculate_max_strength_strain(strain, stress)
-
-    if ultimate_tensile_strength==-1 or fracture_strain ==-1:
-        print("Error! Tensile Strength or Fracture Strain returned as -1. Did you complete the calculate_max_strength() method?")
+    if ultimate_tensile_strength == -1 or fracture_strain == -1:
+        print(
+            "Error! Did you complete "
+            "calculate_max_strength_strain()?"
+        )
         sys.exit(-1)
 
-    print("Ultimate Tensile Stress is ", ultimate_tensile_strength, "MPa")
-    print("Fracture Strain is ", 100 * fracture_strain, " percent")
+    print(
+        "Ultimate Tensile Stress is",
+        ultimate_tensile_strength,
+        "MPa",
+    )
+    print(
+        "Fracture Strain is",
+        100 * fracture_strain,
+        "percent",
+    )
 
-    # Step #3: Use the Secant Modulus at 40% of Peak Stress
-    # to determine elastic modulus
-
-    linear_index, slope, intercept = calculate_elastic_modulus(strain, stress)
+    # Step 3: Elastic modulus.
+    linear_index, slope, intercept = calculate_elastic_modulus(
+        strain, stress
+    )
 
     if linear_index is None or slope is None or intercept is None:
-        print("Incorrect value determined by calculate_elastic_modulus() did you implement that function?")
+        print(
+            "Error! Did you complete "
+            "calculate_elastic_modulus()?"
+        )
         sys.exit(-1)
 
-    print("Elastic Modulus is ", slope / 1000, 'GPa')
+    print("Elastic Modulus is", slope / 1000, "GPa")
 
-    # show the original curve indicating the secant modulus at 40%
+    # Plot the point near 40% of peak stress.
+    plt.figure()
     plt.scatter(strain, stress, label="Stress - Strain")
-    plt.xlabel('Strain (mm/mm)')
-    plt.ylabel('Stress (MPa)')
-    plt.title('Stress-Strain Curve for Sample ' + sample_name)
+    plt.xlabel("Strain (mm/mm)")
+    plt.ylabel("Stress (MPa)")
+    plt.title("Stress-Strain Curve for Sample " + sample_name)
 
-    plt.scatter(strain[linear_index], stress[linear_index], marker="v", label="Secant Modulus at 40%")
+    plt.scatter(
+        strain[linear_index],
+        stress[linear_index],
+        marker="v",
+        label="Secant Modulus at 40%",
+    )
 
     plt.legend()
     plt.show()
 
-    # now plot the linear region for the best fit line
+    # Plot the initial region and its best-fit line.
     linear_strain = strain[0:linear_index]
     linear_stress = stress[0:linear_index]
 
-    plt.scatter(linear_strain, linear_stress, label="Stress - Strain")
-    plt.xlabel('Strain (mm/mm)')
-    plt.ylabel('Stress (MPa)')
-    plt.title('Linear Region for Sample ' + sample_name + ' with best fit')
+    plt.figure()
+    plt.scatter(
+        linear_strain,
+        linear_stress,
+        label="Stress - Strain",
+    )
+    plt.xlabel("Strain (mm/mm)")
+    plt.ylabel("Stress (MPa)")
+    plt.title(
+        "Linear Region for Sample "
+        + sample_name
+        + " with best fit"
+    )
 
-    # compute line y=mx+b
     best_fit_line = slope * linear_strain + intercept
-    plt.plot(linear_strain, best_fit_line, label="Best Linear Fit")
+
+    plt.plot(
+        linear_strain,
+        best_fit_line,
+        label="Best Linear Fit",
+    )
 
     plt.legend()
     plt.show()
 
-    ### Step 4: calculate 0.2% yield strength ###
-    offset_line, intercept_index = calculate_percent_offset(slope, strain, stress)
+    # Step 4: 0.2% offset yield strength.
+    offset_line, intercept_index = calculate_percent_offset(
+        slope, strain, stress
+    )
 
-    if offset_line is None or intercept_index==-1:
-        print("Calculate Percent Offset Returned None or -1. Did you return the correct values?")
+    if offset_line is None or intercept_index == -1:
+        print(
+            "Error! Did you complete "
+            "calculate_percent_offset()?"
+        )
         sys.exit(-1)
 
-    # print out the results
-    print("The 0.2% Offset Yield is ", stress[intercept_index], " MPa")
+    print(
+        "The 0.2% Offset Yield is",
+        stress[intercept_index],
+        "MPa",
+    )
 
-    # create line parallel to linear region and find intersection with overall curve
+    plt.figure()
     plt.scatter(strain, stress, label="Stress - Strain")
-    plt.xlabel('Strain (mm/mm)')
-    plt.ylabel('Stress (MPa)')
-    plt.title('Stress-Strain Curve for Sample ' + sample_name + " with 0.2% Yield")
+    plt.xlabel("Strain (mm/mm)")
+    plt.ylabel("Stress (MPa)")
+    plt.title(
+        "Stress-Strain Curve for Sample "
+        + sample_name
+        + " with 0.2% Yield"
+    )
 
-    # plot yield line
-    plt.plot(strain, offset_line, label="0.2% Offset Yield")
+    plt.plot(
+        strain,
+        offset_line,
+        label="0.2% Offset Yield",
+    )
 
-    # indicate point where yield intersects
-    plt.plot(strain[intercept_index], stress[intercept_index], marker='v', label="Yield Strength")
+    plt.plot(
+        strain[intercept_index],
+        stress[intercept_index],
+        marker="v",
+        linestyle="None",
+        label="Yield Strength",
+    )
 
-    # since this will go on forever, constrain the axis
     plt.xlim([-.001, max(strain)])
     plt.ylim([0, 1.1 * max(stress)])
     plt.legend()
     plt.show()
 
     print("Done!")
-
-
-
